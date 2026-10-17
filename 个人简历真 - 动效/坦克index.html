@@ -1,0 +1,2724 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>浪尖儿坦克大战 | Tank Battle</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden; background: #000;
+      font-family: 'Microsoft YaHei', Arial, sans-serif;
+      user-select: none;
+    }
+    #game-container { width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+    canvas { display: block; }
+    #loading {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: #000; display: flex; flex-direction: column; justify-content: center; align-items: center;
+      color: #00ffff; font-size: 24px; z-index: 9999;
+    }
+    #loading .spinner {
+      width: 50px; height: 50px;
+      border: 4px solid #1a1a2e;
+      border-top: 4px solid #00ffff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-bottom: 20px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    #loading .text {
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="loading">
+    <div class="spinner"></div>
+    <div class="text">加载中...</div>
+  </div>
+  <div id="game-container"></div>
+  <script>
+// ============ 坦克大战 - 单文件版本 ============
+
+const GAME_WIDTH = 1280;
+const GAME_HEIGHT = 720;
+
+const COLORS = {
+  primary: 0x00ffff,
+  secondary: 0xff00ff,
+  accent: 0xffff00,
+  success: 0x00ff00,
+  danger: 0xff0000,
+  warning: 0xff8800,
+  boss: 0xff0066,
+  player: 0x00ffff,
+  enemy: 0x888888,
+};
+
+// ============ 坦克基类 ============
+class Tank extends Phaser.GameObjects.Container {
+  constructor(scene, x, y, config = {}) {
+    super(scene, x, y);
+    this.scene = scene;
+    this.hp = config.hp || 100;
+    this.maxHp = config.maxHp || 100;
+    this.speed = config.speed || 100;
+    this.damage = config.damage || 10;
+    this.fireRate = config.fireRate || 1500;
+    this.color = config.color || 0x888888;
+    this.isPlayer = config.isPlayer || false;
+    this.owner = config.owner || 'enemy';
+    this.size = config.size || 36;
+    this.lastFireTime = 0;
+    this.isDead = false;
+    this.activeEffects = {};
+    this.direction = 'up';
+    this.angle = 0;
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.kills = 0;
+    this.score = 0;
+    this.level = config.level || 1;
+    
+    scene.add.existing(this);
+    this.createTank();
+  }
+  
+  createTank() {
+    const s = this.size;
+    // Shadow under tank
+    this.shadow = this.scene.add.graphics();
+    this.add(this.shadow);
+    // Left track with animated treads
+    this.leftTrack = this.scene.add.graphics();
+    this.leftTrackTreads = this.scene.add.graphics();
+    this.add(this.leftTrack);
+    this.add(this.leftTrackTreads);
+    // Right track
+    this.rightTrack = this.scene.add.graphics();
+    this.rightTrackTreads = this.scene.add.graphics();
+    this.add(this.rightTrack);
+    this.add(this.rightTrackTreads);
+    // Hull body
+    this.body = this.scene.add.graphics();
+    this.bodyAccent = this.scene.add.graphics();
+    this.add(this.body);
+    this.add(this.bodyAccent);
+    // Turret
+    this.turret = this.scene.add.graphics();
+    this.turretAccent = this.scene.add.graphics();
+    this.add(this.turret);
+    this.add(this.turretAccent);
+    // Barrel
+    this.barrel = this.scene.add.graphics();
+    this.muzzle = this.scene.add.graphics();
+    this.add(this.barrel);
+    this.add(this.muzzle);
+    // Rivets for detail
+    this.rivets = this.scene.add.graphics();
+    this.add(this.rivets);
+    
+    this.drawTank();
+    this.treadOffset = 0;
+  }
+  
+  drawTank() {
+    const s = this.size;
+    const halfS = s / 2;
+    const trackW = s * 0.22;
+    const trackH = s * 0.92;
+    const bodyW = s * 0.56;
+    const bodyH = s * 0.78;
+    const turretR = s * 0.22;
+    
+    // === SHADOW ===
+    this.shadow.clear();
+    this.shadow.fillStyle(0x000000, 0.35);
+    this.shadow.fillEllipse(3, 5, s * 0.85, s * 0.22);
+    
+    // === LEFT TRACK ===
+    const leftTrackX = -halfS + 2;
+    this.leftTrack.clear();
+    // Track base (dark)
+    this.leftTrack.fillStyle(0x1a1a1a, 1);
+    this.leftTrack.fillRoundedRect(leftTrackX, -trackH/2, trackW, trackH, 3);
+    // Track side highlight
+    this.leftTrack.fillStyle(0x444444, 0.6);
+    this.leftTrack.fillRect(leftTrackX + 1, -trackH/2 + 2, 2, trackH - 4);
+    // Track treads
+    this.leftTrackTreads.clear();
+    this.leftTrackTreads.fillStyle(0x333333, 1);
+    const treadCount = 7;
+    const treadH = trackH / treadCount;
+    for (let i = 0; i < treadCount; i++) {
+      const ty = -trackH/2 + i * treadH + this.treadOffset;
+      this.leftTrackTreads.fillRect(leftTrackX + 1, ty, trackW - 2, treadH - 2);
+    }
+    // Track bolts
+    this.leftTrack.fillStyle(0x666666, 1);
+    for (let i = 0; i < treadCount; i++) {
+      const ty = -trackH/2 + i * treadH + treadH/2;
+      this.leftTrack.fillCircle(leftTrackX + trackW/2, ty, 1.5);
+    }
+    
+    // === RIGHT TRACK ===
+    const rightTrackX = halfS - trackW - 2;
+    this.rightTrack.clear();
+    this.rightTrack.fillStyle(0x1a1a1a, 1);
+    this.rightTrack.fillRoundedRect(rightTrackX, -trackH/2, trackW, trackH, 3);
+    this.rightTrack.fillStyle(0x444444, 0.6);
+    this.rightTrack.fillRect(rightTrackX + trackW - 3, -trackH/2 + 2, 2, trackH - 4);
+    this.rightTrackTreads.clear();
+    this.rightTrackTreads.fillStyle(0x333333, 1);
+    for (let i = 0; i < treadCount; i++) {
+      const ty = -trackH/2 + i * treadH + this.treadOffset;
+      this.rightTrackTreads.fillRect(rightTrackX + 1, ty, trackW - 2, treadH - 2);
+    }
+    this.rightTrack.fillStyle(0x666666, 1);
+    for (let i = 0; i < treadCount; i++) {
+      const ty = -trackH/2 + i * treadH + treadH/2;
+      this.rightTrack.fillCircle(rightTrackX + trackW/2, ty, 1.5);
+    }
+    
+    // === HULL BODY ===
+    const bodyX = -bodyW/2;
+    const bodyY = -bodyH/2;
+    // Main hull
+    this.body.clear();
+    this.body.fillStyle(this.color, 1);
+    // Angled armor - front sloped
+    this.body.beginPath();
+    this.body.moveTo(bodyX + 4, bodyY);
+    this.body.lineTo(bodyX + bodyW - 4, bodyY);
+    this.body.lineTo(bodyX + bodyW, bodyY + bodyH * 0.3);
+    this.body.lineTo(bodyX + bodyW, bodyY + bodyH);
+    this.body.lineTo(bodyX, bodyY + bodyH);
+    this.body.lineTo(bodyX, bodyY + bodyH * 0.3);
+    this.body.closePath();
+    this.body.fillPath();
+    
+    // Body accent - lighter top portion
+    this.bodyAccent.clear();
+    this.bodyAccent.fillStyle(0xffffff, 0.18);
+    this.bodyAccent.beginPath();
+    this.bodyAccent.moveTo(bodyX + 6, bodyY + 2);
+    this.bodyAccent.lineTo(bodyX + bodyW - 6, bodyY + 2);
+    this.bodyAccent.lineTo(bodyX + bodyW - 2, bodyY + bodyH * 0.28);
+    this.bodyAccent.lineTo(bodyX + 2, bodyY + bodyH * 0.28);
+    this.bodyAccent.closePath();
+    this.bodyAccent.fillPath();
+    
+    // Body bottom shadow
+    this.body.fillStyle(0x000000, 0.3);
+    this.body.fillRect(bodyX, bodyY + bodyH - 6, bodyW, 6);
+    
+    // Panel lines
+    this.body.lineStyle(1, 0x000000, 0.4);
+    this.body.strokeRect(bodyX + 2, bodyY + bodyH * 0.35, bodyW - 4, bodyH * 0.25);
+    
+    // === TURRET ===
+    this.turret.clear();
+    // Main turret body (hexagon-like)
+    this.turret.fillStyle(this.color, 1);
+    this.turret.beginPath();
+    const hexR = turretR;
+    const hexPoints = 6;
+    for (let i = 0; i < hexPoints; i++) {
+      const angle = (Math.PI * 2 / hexPoints) * i - Math.PI / 2;
+      const tx = Math.cos(angle) * hexR;
+      const ty = Math.sin(angle) * hexR;
+      if (i === 0) this.turret.moveTo(tx, ty);
+      else this.turret.lineTo(tx, ty);
+    }
+    this.turret.closePath();
+    this.turret.fillPath();
+    
+    // Turret accent
+    this.turretAccent.clear();
+    this.turretAccent.fillStyle(0xffffff, 0.25);
+    this.turretAccent.beginPath();
+    for (let i = 0; i < hexPoints; i++) {
+      const angle = (Math.PI * 2 / hexPoints) * i - Math.PI / 2;
+      const tx = Math.cos(angle) * (hexR - 3);
+      const ty = Math.sin(angle) * (hexR - 3) - 1;
+      if (i === 0) this.turretAccent.moveTo(tx, ty);
+      else this.turretAccent.lineTo(tx, ty);
+    }
+    this.turretAccent.closePath();
+    this.turretAccent.fillPath();
+    
+    // Turret center
+    this.turret.fillStyle(0x000000, 0.4);
+    this.turret.fillCircle(0, 0, hexR * 0.35);
+    
+    // === BARREL ===
+    const barrelLen = s * 0.55;
+    const barrelW = s * 0.12;
+    this.barrel.clear();
+    // Barrel body
+    this.barrel.fillStyle(0x2a2a2a, 1);
+    this.barrel.fillRect(-barrelW/2, -barrelLen, barrelW, barrelLen);
+    // Barrel highlight
+    this.barrel.fillStyle(0x555555, 0.6);
+    this.barrel.fillRect(-barrelW/2 + 1, -barrelLen + 2, 2, barrelLen - 4);
+    // Barrel connection to turret
+    this.barrel.fillStyle(this.color, 1);
+    this.barrel.fillRect(-barrelW * 0.7, -barrelLen * 0.15, barrelW * 1.4, barrelLen * 0.2);
+    
+    // === MUZZLE ===
+    this.muzzle.clear();
+    // Muzzle brake (tip of barrel)
+    this.muzzle.fillStyle(0x1a1a1a, 1);
+    this.muzzle.fillRect(-barrelW * 0.6, -barrelLen - 5, barrelW * 1.2, 6);
+    // Muzzle holes
+    this.muzzle.fillStyle(0x0a0a0a, 1);
+    this.muzzle.fillRect(-barrelW * 0.3, -barrelLen - 3, 2, 2);
+    this.muzzle.fillRect(barrelW * 0.1, -barrelLen - 3, 2, 2);
+    
+    // === RIVETS ===
+    this.rivets.clear();
+    this.rivets.fillStyle(0x888888, 0.8);
+    // Hull rivets
+    const rivetSize = 1.5;
+    this.rivets.fillCircle(bodyX + 6, bodyY + 6, rivetSize);
+    this.rivets.fillCircle(bodyX + bodyW - 6, bodyY + 6, rivetSize);
+    this.rivets.fillCircle(bodyX + 6, bodyY + bodyH - 6, rivetSize);
+    this.rivets.fillCircle(bodyX + bodyW - 6, bodyY + bodyH - 6, rivetSize);
+    // Turret rivets
+    this.rivets.fillCircle(-hexR * 0.5, -hexR * 0.5, rivetSize);
+    this.rivets.fillCircle(hexR * 0.5, -hexR * 0.5, rivetSize);
+    this.rivets.fillCircle(-hexR * 0.5, hexR * 0.5, rivetSize);
+    this.rivets.fillCircle(hexR * 0.5, hexR * 0.5, rivetSize);
+  }
+  
+  animateTreads(delta) {
+    // Animate track treads when tank is moving
+    if (this.isMoving) {
+      this.treadOffset = (this.treadOffset + delta * 0.05) % 8;
+      this.drawTank();
+    }
+  }
+  
+  move(dir, delta) {
+    if (this.isDead) return;
+    const speed = this.getEffectiveSpeed();
+    const moveSpeed = speed * (delta / 1000);
+    let dx = 0, dy = 0;
+    
+    switch(dir) {
+      case 'up': dy = -1; break;
+      case 'down': dy = 1; break;
+      case 'left': dx = -1; break;
+      case 'right': dx = 1; break;
+    }
+    
+    this.x += dx * moveSpeed;
+    this.y += dy * moveSpeed;
+    this.direction = dir;
+    this.isMoving = true;
+    
+    const angleMap = { up: 0, right: 90, down: 180, left: 270 };
+    this.setRotation(angleMap[dir]);
+    
+    const margin = 30;
+    this.x = Phaser.Math.Clamp(this.x, margin, this.scene.scale.width - margin);
+    this.y = Phaser.Math.Clamp(this.y, margin, this.scene.scale.height - margin);
+  }
+  
+  fire() {
+    if (this.isDead || !this.canFire()) return null;
+    this.lastFireTime = this.scene.time.now;
+    const angle = this.angle * Math.PI / 180;
+    const spawnDist = 25;
+    const spawnX = this.x + Math.sin(angle) * spawnDist;
+    const spawnY = this.y - Math.cos(angle) * spawnDist;
+    
+    const bullet = this.scene.add.graphics();
+    bullet.setData('active', true);
+    bullet.setData('damage', this.getEffectiveDamage());
+    bullet.setData('owner', this.owner);
+    bullet.setData('vx', Math.sin(angle));
+    bullet.setData('vy', -Math.cos(angle));
+    bullet.setData('speed', 500);
+    bullet.setData('radius', 6);
+    
+    const bColor = this.owner === 'boss' ? 0xff0066 : this.owner === 'enemy' ? 0xff4444 : 0xffff00;
+    bullet.fillStyle(0xffff00, 1);
+    bullet.fillCircle(0, 0, 6);
+    bullet.lineStyle(2, 0xffffff, 0.8);
+    bullet.strokeCircle(0, 0, 8);
+    bullet.fillStyle(bColor, 0.3);
+    bullet.fillCircle(0, 0, 12);
+    
+    bullet.setPosition(spawnX, spawnY);
+    bullet.setDepth(100);
+    return bullet;
+  }
+  
+  canFire() {
+    return this.scene.time.now - this.lastFireTime >= this.getEffectiveFireRate();
+  }
+  
+  takeDamage(dmg) {
+    if (this.isDead || this.hasEffect('shield')) return false;
+    this.hp -= dmg;
+    this.flashEffect();
+    if (this.hp <= 0) {
+      this.hp = 0;
+      this.die();
+      return true;
+    }
+    return false;
+  }
+  
+  heal(amount) {
+    this.hp = Math.min(this.maxHp, this.hp + amount);
+  }
+  
+  die() {
+    if (this.isDead) return;
+    this.isDead = true;
+    this.createExplosion();
+    this.scene.events.emit('tank-death', this);
+  }
+  
+  createExplosion() {
+    for (let i = 0; i < 3; i++) {
+      this.scene.time.delayedCall(i * 100, () => {
+        const r = 20 + i * 15;
+        const exp = this.scene.add.graphics();
+        exp.fillStyle(0xff4400, 0.7);
+        exp.fillCircle(this.x, this.y, r);
+        this.scene.tweens.add({
+          targets: exp, scale: { from: 1, to: 2 }, alpha: { from: 0.7, to: 0 },
+          duration: 400, onComplete: () => exp.destroy()
+        });
+      });
+    }
+    this.scene.cameras.main.shake(200, 0.005);
+  }
+  
+  flashEffect() {
+    const origAlpha = this.alpha;
+    this.scene.tweens.add({
+      targets: this, alpha: { from: 0.5, to: origAlpha }, duration: 100
+    });
+  }
+  
+  addEffect(type, duration) {
+    this.activeEffects[type] = { startTime: this.scene.time.now, duration };
+  }
+  
+  hasEffect(type) {
+    return this.activeEffects[type] && 
+           this.scene.time.now - this.activeEffects[type].startTime < this.activeEffects[type].duration;
+  }
+  
+  updateEffects() {
+    const expired = [];
+    for (const [type, effect] of Object.entries(this.activeEffects)) {
+      if (this.scene.time.now - effect.startTime >= effect.duration) {
+        expired.push(type);
+      }
+    }
+    expired.forEach(t => delete this.activeEffects[t]);
+  }
+  
+  getEffectiveSpeed() {
+    let s = this.speed;
+    if (this.hasEffect('speed')) s *= 1.5;
+    return s;
+  }
+  
+  getEffectiveDamage() {
+    let d = this.damage;
+    if (this.hasEffect('double_damage')) d *= 2;
+    return d;
+  }
+  
+  getEffectiveFireRate() {
+    let r = this.fireRate;
+    if (this.hasEffect('rapid_fire')) r *= 0.5;
+    return r;
+  }
+  
+  update() {
+    if (this.isDead) return;
+    this.updateEffects();
+    // Reset moving flag - will be set by move()
+    this.isMoving = false;
+  }
+  
+  getHp() { return this.hp; }
+  getMaxHp() { return this.maxHp; }
+  getLevel() { return this.level; }
+  
+  addCombo() {
+    this.comboCount++;
+    this.comboTimer = 2000;
+  }
+  
+  getComboMultiplier() {
+    return Math.min(1 + this.comboCount * 0.2, 5);
+  }
+  
+  addScore(amount) {
+    this.score += Math.floor(amount * this.getComboMultiplier());
+  }
+  
+  levelUp() {
+    if (this.level >= 5) return;
+    this.level++;
+    const bonus = (this.level - 1) * 0.2;
+    this.maxHp = 100 * (1 + bonus);
+    this.hp = this.maxHp;
+    this.damage = 20 * (1 + bonus);
+    this.scene.events.emit('player-levelup', this.level);
+  }
+}
+
+// ============ 玩家坦克 ============
+class PlayerTank extends Tank {
+  constructor(scene, x, y) {
+    super(scene, x, y, {
+      hp: 100, maxHp: 100, speed: 180, damage: 20, 
+      fireRate: 300, color: COLORS.player, isPlayer: true, owner: 'player', size: 38
+    });
+    this.setupInput();
+    this.kills = 0;
+    this.totalScore = 0;
+  }
+  
+  setupInput() {
+    this.cursors = this.scene.input.keyboard.createCursorKeys();
+    this.wasd = this.scene.input.keyboard.addKeys('W,A,S,D');
+    this.spaceKey = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    this.shiftKey = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+  }
+  
+  update(_time, delta) {
+    super.update();
+    if (this.isDead) return;
+    
+    if (this.cursors.up.isDown || (this.wasd && this.wasd.W.isDown)) {
+      this.move('up', delta);
+    } else if (this.cursors.down.isDown || (this.wasd && this.wasd.S.isDown)) {
+      this.move('down', delta);
+    } else if (this.cursors.left.isDown || (this.wasd && this.wasd.A.isDown)) {
+      this.move('left', delta);
+    } else if (this.cursors.right.isDown || (this.wasd && this.wasd.D.isDown)) {
+      this.move('right', delta);
+    }
+    
+    // Animate treads when moving
+    if (this.isMoving) {
+      this.treadOffset = (this.treadOffset + delta * 0.06) % 8;
+      this.drawTank();
+    }
+    
+    if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
+      const b = this.fire();
+      if (b) this.scene.events.emit('player-shoot', b);
+    }
+  }
+  
+  onEnemyKilled(enemy) {
+    this.kills++;
+    this.addCombo();
+    this.totalScore += enemy.score;
+    this.scene.events.emit('score-update', this.totalScore);
+  }
+  
+  getTotalScore() { return this.totalScore; }
+  getKills() { return this.kills; }
+}
+
+// ============ 玩家2坦克（双人模式） ============
+class PlayerTank2 extends Tank {
+  constructor(scene, x, y) {
+    super(scene, x, y, {
+      hp: 100, maxHp: 100, speed: 180, damage: 20, 
+      fireRate: 300, color: 0xff00ff, isPlayer: true, owner: 'player2', size: 38
+    });
+    this.setupInput();
+    this.kills = 0;
+    this.totalScore = 0;
+    this.playerIndex = 2;
+  }
+  
+  setupInput() {
+    // Player 2 uses Arrow keys + Enter
+    this.p2Up = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.UP);
+    this.p2Down = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.DOWN);
+    this.p2Left = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT);
+    this.p2Right = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT);
+    this.p2Fire = this.scene.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+  }
+  
+  update(_time, delta) {
+    super.update();
+    if (this.isDead) return;
+    
+    if (this.p2Up.isDown) {
+      this.move('up', delta);
+    } else if (this.p2Down.isDown) {
+      this.move('down', delta);
+    } else if (this.p2Left.isDown) {
+      this.move('left', delta);
+    } else if (this.p2Right.isDown) {
+      this.move('right', delta);
+    }
+    
+    // Animate treads when moving
+    if (this.isMoving) {
+      this.treadOffset = (this.treadOffset + delta * 0.06) % 8;
+      this.drawTank();
+    }
+    
+    if (Phaser.Input.Keyboard.JustDown(this.p2Fire)) {
+      const b = this.fire();
+      if (b) this.scene.events.emit('player2-shoot', b);
+    }
+  }
+  
+  onEnemyKilled(enemy) {
+    this.kills++;
+    this.addCombo();
+    this.totalScore += enemy.score;
+    this.scene.events.emit('score-update', this.totalScore);
+  }
+  
+  getTotalScore() { return this.totalScore; }
+  getKills() { return this.kills; }
+}
+
+// ============ 敌人坦克 ============
+class EnemyTank extends Tank {
+  constructor(scene, x, y, type) {
+    const configs = {
+      normal: { hp: 50, speed: 80, damage: 10, fireRate: 1500, color: 0x888888, score: 100 },
+      fast: { hp: 30, speed: 180, damage: 8, fireRate: 2000, color: 0x00ffff, score: 150 },
+      armored: { hp: 200, speed: 50, damage: 25, fireRate: 2500, color: 0x8b4513, score: 250 },
+      suicide: { hp: 40, speed: 140, damage: 50, fireRate: 999999, color: 0xff4500, score: 200 },
+      sniper: { hp: 40, speed: 60, damage: 40, fireRate: 3000, color: 0x9400d3, score: 300 }
+    };
+    const cfg = configs[type] || configs.normal;
+    
+    super(scene, x, y, {
+      hp: cfg.hp, maxHp: cfg.hp, speed: cfg.speed, 
+      damage: cfg.damage, fireRate: cfg.fireRate, 
+      color: cfg.color, owner: 'enemy', size: 32
+    });
+    this.enemyType = type;
+    this.score = cfg.score;
+    this.aiState = 'patrol';
+    this.aiTimer = 0;
+    this.patrolTarget = null;
+    this.visionRange = type === 'sniper' ? 500 : 250;
+    this.lastPlayerPos = null;
+  }
+  
+  update(_time, delta) {
+    super.update();
+    if (this.isDead) return;
+    this.updateAI(delta);
+  }
+  
+  updateAI(delta) {
+    this.aiTimer -= delta;
+    
+    // Find nearest alive player
+    const player = this.scene.registry.get('playerTank');
+    const player2 = this.scene.registry.get('playerTank2');
+    let target = null;
+    let minDist = Infinity;
+    
+    if (player && !player.isDead) {
+      const d = Math.sqrt((player.x - this.x)**2 + (player.y - this.y)**2);
+      if (d < minDist) { minDist = d; target = player; }
+    }
+    if (player2 && !player2.isDead) {
+      const d = Math.sqrt((player2.x - this.x)**2 + (player2.y - this.y)**2);
+      if (d < minDist) { minDist = d; target = player2; }
+    }
+    
+    if (!target) {
+      this.patrol(delta);
+      return;
+    }
+    
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const canSee = dist < this.visionRange;
+    
+    if (canSee) {
+      this.lastPlayerPos = { x: target.x, y: target.y };
+      
+      if (this.enemyType === 'suicide') {
+        this.moveTowards(target, delta);
+      } else if (dist < 220 && this.aiTimer <= 0) {
+        this.fire();
+        this.aiTimer = this.fireRate;
+        if (dist < 150) {
+          this.x -= (dx/dist) * this.speed * (delta/1000) * 0.3;
+          this.y -= (dy/dist) * this.speed * (delta/1000) * 0.3;
+        }
+      } else {
+        this.moveTowards(target, delta);
+      }
+    } else if (this.lastPlayerPos) {
+      this.moveTowards(this.lastPlayerPos, delta);
+      if (dist > this.visionRange * 1.5) this.lastPlayerPos = null;
+    } else {
+      this.patrol(delta);
+    }
+  }
+  
+  moveTowards(target, delta) {
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < 15) return;
+    
+    if (Math.abs(dx) > Math.abs(dy)) {
+      this.move(dx > 0 ? 'right' : 'left', delta);
+    } else {
+      this.move(dy > 0 ? 'down' : 'up', delta);
+    }
+  }
+  
+  patrol(delta) {
+    if (!this.patrolTarget || this.aiTimer <= 0) {
+      this.patrolTarget = {
+        x: Phaser.Math.Between(100, this.scene.scale.width - 100),
+        y: Phaser.Math.Between(100, this.scene.scale.height - 100)
+      };
+      this.aiTimer = 2000;
+    }
+    if (this.patrolTarget) {
+      this.moveTowards(this.patrolTarget, delta);
+    }
+  }
+}
+
+// ============ Boss坦克 ============
+class BossTank extends Tank {
+  constructor(scene, x, y, type) {
+    const bossConfigs = {
+      warden: { hp: 3000, speed: 40, damage: 30, fireRate: 1000, color: 0xff0066, score: 5000 },
+      hunter: { hp: 5000, speed: 80, damage: 40, fireRate: 800, color: 0xff0066, score: 8000 },
+      overlord: { hp: 10000, speed: 60, damage: 50, fireRate: 600, color: 0xff0066, score: 20000 }
+    };
+    const cfg = bossConfigs[type] || bossConfigs.warden;
+    
+    super(scene, x, y, {
+      hp: cfg.hp, maxHp: cfg.hp, speed: cfg.speed,
+      damage: cfg.damage, fireRate: cfg.fireRate,
+      color: cfg.color, owner: 'boss', size: 50
+    });
+    this.bossType = type;
+    this.score = cfg.score;
+    this.currentPhase = 0;
+    this.phaseTimer = 0;
+    this.specialTimer = 15000;
+    this.minionTimer = 10000;
+    this.rageMode = false;
+    this.lastPlayerPos = null;
+    
+    this.createHealthBar();
+  }
+  
+  createHealthBar() {
+    const bw = this.scene.scale.width * 0.6;
+    const bx = this.scene.scale.width / 2;
+    const by = 40;
+    
+    this.hpBg = this.scene.add.graphics();
+    this.hpBg.setScrollFactor(0);
+    this.hpBg.setDepth(1000);
+    this.hpBg.fillStyle(0x330000, 0.8);
+    this.hpBg.fillRoundedRect(bx - bw/2, by, bw, 20, 5);
+    this.hpBg.lineStyle(2, 0xff0066, 1);
+    this.hpBg.strokeRoundedRect(bx - bw/2, by, bw, 20, 5);
+    
+    this.hpBar = this.scene.add.graphics();
+    this.hpBar.setScrollFactor(0);
+    this.hpBar.setDepth(1001);
+    
+    const names = { warden: '守护者', hunter: '猎手', overlord: '霸主' };
+    this.bossName = this.scene.add.text(bx, by - 25, names[this.bossType] || 'BOSS', {
+      fontSize: '20px', color: '#ff0066', fontStyle: 'bold'
+    });
+    this.bossName.setOrigin(0.5);
+    this.bossName.setScrollFactor(0);
+    this.bossName.setDepth(1002);
+    
+    this.hpPercent = this.scene.add.text(bx + bw/2 + 10, by + 10, '100%', {
+      fontSize: '14px', color: '#ffffff'
+    });
+    this.hpPercent.setOrigin(0, 0.5);
+    this.hpPercent.setScrollFactor(0);
+    this.hpPercent.setDepth(1002);
+  }
+  
+  updateHealthBar() {
+    if (!this.hpBar) return;
+    const bw = this.scene.scale.width * 0.6;
+    const bx = this.scene.scale.width / 2;
+    const by = 40;
+    const hpPct = this.hp / this.maxHp;
+    
+    this.hpBar.clear();
+    this.hpBar.fillStyle(0xff0066, 1);
+    this.hpBar.fillRoundedRect(bx - bw/2, by, bw * hpPct, 20, 5);
+    
+    if (this.hpPercent) {
+      this.hpPercent.setText(Math.round(hpPct * 100) + '%');
+    }
+  }
+  
+  update(_time, delta) {
+    super.update();
+    if (this.isDead) return;
+    this.updateBossAI(delta);
+    this.updateHealthBar();
+  }
+  
+  updateBossAI(delta) {
+    this.phaseTimer -= delta;
+    this.specialTimer -= delta;
+    this.minionTimer -= delta;
+    
+    const hpPct = this.hp / this.maxHp;
+    if (hpPct <= 0.3 && !this.rageMode) {
+      this.rageMode = true;
+      this.damage *= 1.5;
+      this.scene.cameras.main.shake(500, 0.01);
+      
+      const rageText = this.scene.add.text(this.x, this.y - 60, '💢 狂暴模式!', {
+        fontSize: '24px', color: '#ff0000', fontStyle: 'bold'
+      });
+      rageText.setOrigin(0.5);
+      rageText.setDepth(500);
+      this.scene.tweens.add({
+        targets: rageText,
+        alpha: { from: 1, to: 0 },
+        y: { from: this.y - 60, to: this.y - 100 },
+        duration: 1500,
+        onComplete: () => rageText.destroy()
+      });
+    }
+    
+    // Find nearest alive player
+    const player = this.scene.registry.get('playerTank');
+    const player2 = this.scene.registry.get('playerTank2');
+    let targetPlayer = null;
+    let minDist = Infinity;
+    
+    if (player && !player.isDead) {
+      const d = Math.sqrt((player.x - this.x)**2 + (player.y - this.y)**2);
+      if (d < minDist) { minDist = d; targetPlayer = player; }
+    }
+    if (player2 && !player2.isDead) {
+      const d = Math.sqrt((player2.x - this.x)**2 + (player2.y - this.y)**2);
+      if (d < minDist) { minDist = d; targetPlayer = player2; }
+    }
+    
+    if (targetPlayer) {
+      const dx = targetPlayer.x - this.x;
+      const dy = targetPlayer.y - this.y;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      
+      this.lastPlayerPos = { x: targetPlayer.x, y: targetPlayer.y };
+      
+      const optimalDist = this.bossType === 'warden' ? 250 : this.bossType === 'hunter' ? 350 : 200;
+      
+      if (dist > optimalDist + 50) {
+        this.moveTowards(targetPlayer, delta);
+      } else if (dist < optimalDist - 50) {
+        this.x -= (dx/dist) * this.speed * (delta/1000);
+        this.y -= (dy/dist) * this.speed * (delta/1000);
+      }
+      
+      if (this.phaseTimer <= 0) {
+        const bulletCount = this.rageMode ? 5 : 3;
+        for (let i = 0; i < bulletCount; i++) {
+          const spread = (i - (bulletCount-1)/2) * 0.25;
+          const angle = Math.atan2(dx, dy) + spread;
+          this.fireAtAngle(angle);
+        }
+        this.phaseTimer = this.fireRate;
+      }
+      
+      if (this.bossType === 'overlord' && this.specialTimer <= 0) {
+        this.spiralAttack();
+        this.specialTimer = 8000;
+      }
+    } else if (this.lastPlayerPos) {
+      this.moveTowards(this.lastPlayerPos, delta);
+    }
+    
+    if (this.minionTimer <= 0 && this.scene.enemies.length < 5) {
+      this.spawnMinion();
+      this.minionTimer = 12000;
+    }
+  }
+  
+  fireAtAngle(angle) {
+    const bullet = this.scene.add.graphics();
+    bullet.setData('active', true);
+    bullet.setData('damage', this.getEffectiveDamage());
+    bullet.setData('owner', 'boss');
+    bullet.setData('vx', Math.sin(angle));
+    bullet.setData('vy', -Math.cos(angle));
+    bullet.setData('speed', 280);
+    bullet.setData('radius', 10);
+    
+    bullet.fillStyle(0xff0066, 1);
+    bullet.fillCircle(0, 0, 10);
+    bullet.lineStyle(3, 0xff0066, 0.8);
+    bullet.strokeCircle(0, 0, 14);
+    
+    bullet.setPosition(this.x + Math.sin(angle) * 45, this.y - Math.cos(angle) * 45);
+    bullet.setDepth(100);
+    
+    this.scene.bullets.push(bullet);
+  }
+  
+  spiralAttack() {
+    const bulletCount = 16;
+    for (let i = 0; i < bulletCount; i++) {
+      const angle = (i / bulletCount) * Math.PI * 2;
+      this.fireAtAngle(angle);
+    }
+  }
+  
+  moveTowards(target, delta) {
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < 20) return;
+    
+    const dir = Math.abs(dx) > Math.abs(dy) 
+      ? (dx > 0 ? 'right' : 'left') 
+      : (dy > 0 ? 'down' : 'up');
+    this.move(dir, delta);
+  }
+  
+  spawnMinion() {
+    const types = ['normal', 'fast'];
+    const type = types[Phaser.Math.Between(0, types.length - 1)];
+    const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    const d = 120;
+    const x = Phaser.Math.Clamp(this.x + Math.cos(angle) * d, 50, this.scene.scale.width - 50);
+    const y = Phaser.Math.Clamp(this.y + Math.sin(angle) * d, 50, this.scene.scale.height - 50);
+    
+    const enemy = new EnemyTank(this.scene, x, y, type);
+    enemy.setDepth(40);
+    this.scene.enemies.push(enemy);
+    
+    const spawnEffect = this.scene.add.graphics();
+    spawnEffect.fillStyle(0xff0066, 0.5);
+    spawnEffect.fillCircle(x, y, 30);
+    this.scene.tweens.add({
+      targets: spawnEffect,
+      alpha: { from: 0.5, to: 0 },
+      scale: { from: 1, to: 2 },
+      duration: 500,
+      onComplete: () => spawnEffect.destroy()
+    });
+  }
+  
+  destroy() {
+    if (this.hpBg) this.hpBg.destroy();
+    if (this.hpBar) this.hpBar.destroy();
+    if (this.bossName) this.bossName.destroy();
+    if (this.hpPercent) this.hpPercent.destroy();
+    super.destroy();
+  }
+}
+
+// ============ 菜单场景 ============
+class MenuScene extends Phaser.Scene {
+  constructor() {
+    super('MenuScene');
+  }
+  
+  create() {
+    this.createBackground();
+    this.createMenu();
+    this.setupInput();
+    
+    // 隐藏加载提示
+    const loading = document.getElementById('loading');
+    if (loading) loading.style.display = 'none';
+  }
+  
+  createBackground() {
+    // 检查背景图片是否加载成功
+    const bgTexture = this.textures.exists('background');
+    
+    if (bgTexture) {
+      // 使用背景图片
+      const bg = this.add.image(this.scale.width/2, this.scale.height/2, 'background');
+      bg.setDisplaySize(this.scale.width, this.scale.height);
+      bg.setDepth(-10);
+      bg.setAlpha(1);
+    } else {
+      // 创建渐变背景作为回退
+      const bg = this.add.graphics();
+      bg.fillGradientStyle(0x0a1628, 0x0a1628, 0x1a3a5c, 0x1a3a5c, 1);
+      bg.fillRect(0, 0, this.scale.width, this.scale.height);
+      bg.setDepth(-10);
+      
+      // 添加圆形装饰模拟原背景
+      const circle = this.add.graphics();
+      circle.fillStyle(0x00ffff, 0.3);
+      circle.fillCircle(this.scale.width * 0.35, this.scale.height * 0.5, 150);
+      circle.setDepth(-9);
+      
+      const circle2 = this.add.graphics();
+      circle2.fillStyle(0x0088aa, 0.2);
+      circle2.fillCircle(this.scale.width * 0.35, this.scale.height * 0.5, 100);
+      circle2.setDepth(-9);
+      
+      // 添加文字
+      const titleText = this.add.text(this.scale.width * 0.55, this.scale.height * 0.45, '浪尖儿', {
+        fontSize: '80px', color: '#ffffff', fontStyle: 'bold'
+      });
+      titleText.setOrigin(0, 0.5);
+      titleText.setAlpha(0.3);
+      titleText.setDepth(-8);
+      
+      const subText = this.add.text(this.scale.width * 0.55, this.scale.height * 0.55, 'WavePeak Elite', {
+        fontSize: '32px', color: '#ffffff'
+      });
+      subText.setOrigin(0, 0.5);
+      subText.setAlpha(0.3);
+      subText.setDepth(-8);
+    }
+    
+    // 科技感渐变遮罩
+    const overlay = this.add.graphics();
+    overlay.fillStyle(0x00ffff, 0.05);
+    overlay.fillRect(0, 0, this.scale.width, this.scale.height);
+    overlay.setDepth(-9);
+    
+    // 扫描线效果
+    for (let i = 0; i < this.scale.height; i += 4) {
+      const line = this.add.graphics();
+      line.fillStyle(0x00ffff, 0.03);
+      line.fillRect(0, i, this.scale.width, 1);
+      line.setDepth(-9);
+    }
+    
+    // 星空粒子
+    for (let i = 0; i < 50; i++) {
+      const star = this.add.graphics();
+      star.fillStyle(0xffffff, 0.3 + Math.random() * 0.5);
+      star.fillCircle(
+        Phaser.Math.Between(0, this.scale.width),
+        Phaser.Math.Between(0, this.scale.height),
+        Phaser.Math.FloatBetween(1, 2.5)
+      );
+      star.setDepth(-8);
+      
+      this.tweens.add({
+        targets: star,
+        alpha: { from: star.alpha, to: star.alpha * 0.1 },
+        duration: Phaser.Math.Between(1500, 4000),
+        yoyo: true,
+        repeat: -1
+      });
+    }
+    
+    // 角落装饰
+    const cornerSize = 60;
+    const corners = [
+      { x: 0, y: 0, dx: 1, dy: 1 },
+      { x: this.scale.width, y: 0, dx: -1, dy: 1 },
+      { x: 0, y: this.scale.height, dx: 1, dy: -1 },
+      { x: this.scale.width, y: this.scale.height, dx: -1, dy: -1 }
+    ];
+    
+    corners.forEach(c => {
+      const corner = this.add.graphics();
+      corner.lineStyle(2, 0x00ffff, 0.6);
+      corner.beginPath();
+      corner.moveTo(c.x + c.dx * cornerSize, c.y);
+      corner.lineTo(c.x, c.y);
+      corner.lineTo(c.x, c.y + c.dy * cornerSize);
+      corner.strokePath();
+      corner.setDepth(-7);
+    });
+    
+    this.createXCILogo();
+  }
+  
+  createXCILogo() {
+    const bw = 100, bh = 40, margin = 20;
+    const lx = this.scale.width - bw/2 - margin;
+    const ly = bh/2 + margin;
+    
+    const bg = this.add.graphics();
+    bg.fillStyle(0x000000, 0.6);
+    bg.fillRoundedRect(lx - bw/2, ly - bh/2, bw, bh, 8);
+    bg.lineStyle(1, 0x00ffff, 0.8);
+    bg.strokeRoundedRect(lx - bw/2, ly - bh/2, bw, bh, 8);
+    bg.setDepth(1000);
+    
+    const txt = this.add.text(lx, ly, 'XCY', {
+      fontSize: '22px', color: '#00ffff', fontStyle: 'bold'
+    });
+    txt.setOrigin(0.5);
+    txt.setDepth(1001);
+    
+    this.tweens.add({
+      targets: [bg, txt],
+      alpha: { from: 0.7, to: 1 },
+      duration: 1000, yoyo: true, repeat: -1
+    });
+  }
+  
+  createMenu() {
+    const cx = this.scale.width / 2;
+    
+    const title = this.add.text(cx, 100, '坦克大战', {
+      fontSize: '64px', color: '#00ffff', fontStyle: 'bold',
+      stroke: '#0088aa', strokeThickness: 4
+    });
+    title.setOrigin(0.5);
+    this.tweens.add({
+      targets: title,
+      alpha: { from: 0.9, to: 1 },
+      duration: 1500, yoyo: true, repeat: -1
+    });
+    
+    const subtitle = this.add.text(cx, 160, 'TANK  BATTLE', {
+      fontSize: '22px', color: '#ff00ff', letterSpacing: '16px'
+    });
+    subtitle.setOrigin(0.5);
+    
+    const options = [
+      { mode: 'campaign', name: '剧情战役', desc: '完成关卡，挑战Boss', icon: '🏆' },
+      { mode: 'survival', name: '无尽生存', desc: '挑战生存极限', icon: '💀' },
+      { mode: 'boss_rush', name: 'Boss挑战', desc: '连续挑战强大Boss', icon: '👑' },
+      { mode: 'two_player', name: '双人模式', desc: '双人合作对抗敌人', icon: '👥' }
+    ];
+    
+    this.menuItems = [];
+    this.cursorIndex = 0;
+    
+    options.forEach((opt, i) => {
+      const y = 220 + i * 85;
+      const item = this.createMenuItem(cx, y, opt);
+      this.menuItems.push(item);
+    });
+    
+    this.updateSelection();
+    
+    const hint = this.add.text(cx, this.scale.height - 60, 
+      '↑↓ 选择 · 空格/回车 确认', {
+      fontSize: '14px', color: '#666666'
+    });
+    hint.setOrigin(0.5);
+  }
+  
+  createMenuItem(x, y, opt) {
+    const w = 400, h = 72;
+    const container = this.add.container(x, y);
+    
+    const bg = this.add.graphics();
+    bg.fillStyle(0x1a1a2e, 0.8);
+    bg.fillRoundedRect(-w/2, -h/2, w, h, 10);
+    bg.lineStyle(2, 0x333344, 1);
+    bg.strokeRoundedRect(-w/2, -h/2, w, h, 10);
+    container.add(bg);
+    
+    const icon = this.add.text(-w/2 + 30, 0, opt.icon, { fontSize: '30px' });
+    icon.setOrigin(0, 0.5);
+    container.add(icon);
+    
+    const name = this.add.text(-w/2 + 85, -10, opt.name, {
+      fontSize: '24px', color: '#fff', fontStyle: 'bold'
+    });
+    name.setOrigin(0, 0.5);
+    container.add(name);
+    
+    const desc = this.add.text(-w/2 + 85, 18, opt.desc, {
+      fontSize: '13px', color: '#888'
+    });
+    desc.setOrigin(0, 0.5);
+    container.add(desc);
+    
+    const arrow = this.add.text(w/2 - 25, 0, '▶', {
+      fontSize: '20px', color: '#00ffff', alpha: 0
+    });
+    arrow.setOrigin(0.5);
+    container.add(arrow);
+    
+    container.setData('mode', opt.mode);
+    container.setData('bg', bg);
+    container.setData('arrow', arrow);
+    
+    container.setInteractive(
+      new Phaser.Geom.Rectangle(-w/2, -h/2, w, h),
+      Phaser.Geom.Rectangle.Contains
+    );
+    
+    container.on('pointerover', () => {
+      this.cursorIndex = this.menuItems.indexOf(container);
+      this.updateSelection();
+    });
+    
+    container.on('pointerdown', () => {
+      this.selectedMode = opt.mode;
+      this.startGame();
+    });
+    
+    return container;
+  }
+  
+  updateSelection() {
+    this.menuItems.forEach((item, i) => {
+      const selected = i === this.cursorIndex;
+      const bg = item.getData('bg');
+      const arrow = item.getData('arrow');
+      const w = 400, h = 72;
+      
+      bg.clear();
+      if (selected) {
+        bg.fillStyle(0x0a0a2e, 0.9);
+        bg.fillRoundedRect(-w/2, -h/2, w, h, 10);
+        bg.lineStyle(2, 0x00ffff, 1);
+        bg.strokeRoundedRect(-w/2, -h/2, w, h, 10);
+        arrow.setAlpha(1);
+        item.setScale(1.02);
+      } else {
+        bg.fillStyle(0x1a1a2e, 0.8);
+        bg.fillRoundedRect(-w/2, -h/2, w, h, 10);
+        bg.lineStyle(2, 0x333344, 1);
+        bg.strokeRoundedRect(-w/2, -h/2, w, h, 10);
+        arrow.setAlpha(0);
+        item.setScale(1);
+      }
+    });
+  }
+  
+  setupInput() {
+    const cursors = this.input.keyboard.createCursorKeys();
+    const enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+    const spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    
+    cursors.up.on('down', () => {
+      this.cursorIndex = (this.cursorIndex - 1 + this.menuItems.length) % this.menuItems.length;
+      this.updateSelection();
+    });
+    
+    cursors.down.on('down', () => {
+      this.cursorIndex = (this.cursorIndex + 1) % this.menuItems.length;
+      this.updateSelection();
+    });
+    
+    const confirm = () => {
+      this.selectedMode = this.menuItems[this.cursorIndex].getData('mode');
+      this.startGame();
+    };
+    
+    enterKey.on('down', confirm);
+    spaceKey.on('down', confirm);
+  }
+  
+  startGame() {
+    this.tweens.add({
+      targets: this.menuItems,
+      alpha: { from: 1, to: 0 },
+      duration: 300,
+      onComplete: () => {
+        const isTwoPlayer = (this.selectedMode === 'two_player');
+        this.registry.set('isTwoPlayer', isTwoPlayer);
+        
+        if (this.selectedMode === 'boss_rush') {
+          this.scene.start('BossScene', { bossType: 'warden', waveCount: 0 });
+        } else {
+          this.scene.start('GameScene', { mode: this.selectedMode, level: 1 });
+        }
+      }
+    });
+  }
+}
+
+// ============ 游戏场景 ============
+class GameScene extends Phaser.Scene {
+  constructor() {
+    super('GameScene');
+  }
+  
+  init(data) {
+    this.mode = data.mode || 'campaign';
+    this.level = data.level || 1;
+  }
+  
+  create() {
+    this.bullets = [];
+    this.enemies = [];
+    this.powerups = [];
+    this.wave = 1;
+    this.waveTimer = 0;
+    this.powerupTimer = 10000;
+    this.isGameOver = false;
+    this.isPaused = false;
+    
+    this.createBackground();
+    this.createPlayer();
+    this.setupEnemies();
+    this.setupPowerups();
+    this.setupUI();
+    this.setupInput();
+    
+    this.registry.set('playerTank', this.player);
+    
+    this.showWaveAnnouncement();
+  }
+  
+  createBackground() {
+    // 检查背景图片是否加载成功
+    const bgTexture = this.textures.exists('background');
+    
+    if (bgTexture) {
+      const bg = this.add.image(this.scale.width/2, this.scale.height/2, 'background');
+      bg.setDisplaySize(this.scale.width, this.scale.height);
+      bg.setDepth(-10);
+      bg.setAlpha(0.8);
+    } else {
+      // 创建渐变背景作为回退
+      const bg = this.add.graphics();
+      bg.fillGradientStyle(0x0a1628, 0x0a1628, 0x1a3a5c, 0x1a3a5c, 1);
+      bg.fillRect(0, 0, this.scale.width, this.scale.height);
+      bg.setDepth(-10);
+    }
+    
+    // 科技感网格
+    const grid = this.add.graphics();
+    grid.lineStyle(1, 0x00ffff, 0.08);
+    for (let x = 0; x < this.scale.width; x += 60) {
+      grid.lineBetween(x, 0, x, this.scale.height);
+    }
+    for (let y = 0; y < this.scale.height; y += 60) {
+      grid.lineBetween(0, y, this.scale.width, y);
+    }
+    grid.setDepth(-8);
+    
+    // 渐变色调叠加
+    const tint = this.add.graphics();
+    tint.fillStyle(0x0a1628, 0.4);
+    tint.fillRect(0, 0, this.scale.width, this.scale.height);
+    tint.setDepth(-9);
+    
+    this.createXCILogo();
+  }
+  
+  createXCILogo() {
+    const bw = 100, bh = 40, margin = 20;
+    const lx = this.scale.width - bw/2 - margin;
+    const ly = bh/2 + margin;
+    
+    const bg = this.add.graphics();
+    bg.fillStyle(0x000000, 0.6);
+    bg.fillRoundedRect(lx - bw/2, ly - bh/2, bw, bh, 8);
+    bg.lineStyle(1, 0x00ffff, 0.8);
+    bg.strokeRoundedRect(lx - bw/2, ly - bh/2, bw, bh, 8);
+    bg.setDepth(1000);
+    
+    const txt = this.add.text(lx, ly, 'XCY', {
+      fontSize: '22px', color: '#00ffff', fontStyle: 'bold'
+    });
+    txt.setOrigin(0.5);
+    txt.setDepth(1001);
+    
+    this.tweens.add({
+      targets: [bg, txt],
+      alpha: { from: 0.7, to: 1 },
+      duration: 1000, yoyo: true, repeat: -1
+    });
+  }
+  
+  createPlayer() {
+    this.player = new PlayerTank(this, this.scale.width/2 - 60, this.scale.height - 100);
+    this.player.setDepth(50);
+    
+    // 双人模式 - 创建玩家2
+    this.isTwoPlayer = (this.mode === 'two_player');
+    this.registry.set('isTwoPlayer', this.isTwoPlayer);
+    if (this.isTwoPlayer) {
+      this.player2 = new PlayerTank2(this, this.scale.width/2 + 60, this.scale.height - 100);
+      this.player2.setDepth(50);
+      this.registry.set('playerTank2', this.player2);
+    }
+  }
+  
+  setupEnemies() {
+    const enemyCount = this.mode === 'survival' ? 4 : 2 + this.level;
+    const types = this.getEnemyTypes();
+    
+    for (let i = 0; i < enemyCount; i++) {
+      this.spawnEnemy(types[Phaser.Math.Between(0, types.length - 1)]);
+    }
+  }
+  
+  getEnemyTypes() {
+    if (this.level <= 2) return ['normal', 'fast'];
+    if (this.level <= 4) return ['normal', 'fast', 'suicide'];
+    if (this.level <= 6) return ['normal', 'fast', 'armored', 'suicide'];
+    return ['normal', 'fast', 'armored', 'suicide', 'sniper'];
+  }
+  
+  spawnEnemy(type) {
+    const side = Phaser.Math.Between(0, 3);
+    let x, y;
+    switch(side) {
+      case 0: x = Phaser.Math.Between(100, this.scale.width - 100); y = 100; break;
+      case 1: x = this.scale.width - 100; y = Phaser.Math.Between(100, this.scale.height - 200); break;
+      case 2: x = Phaser.Math.Between(100, this.scale.width - 100); y = 100; break;
+      default: x = 100; y = Phaser.Math.Between(100, this.scale.height - 200); break;
+    }
+    
+    const enemy = new EnemyTank(this, x, y, type);
+    enemy.setDepth(40);
+    this.enemies.push(enemy);
+  }
+  
+  setupPowerups() {
+    const types = ['heal', 'speed', 'shield'];
+    for (let i = 0; i < 3; i++) {
+      this.spawnPowerup(types[Phaser.Math.Between(0, types.length - 1)]);
+    }
+  }
+  
+  spawnPowerup(type) {
+    const configs = {
+      heal: { color: 0x00ff00, icon: '❤', name: '治疗' },
+      speed: { color: 0xffff00, icon: '⚡', name: '加速' },
+      shield: { color: 0x00ffff, icon: '🛡', name: '护盾' },
+      double_damage: { color: 0xff4500, icon: '💥', name: '双倍伤害' },
+      rapid_fire: { color: 0xffd700, icon: '🔫', name: '急速射击' }
+    };
+    const cfg = configs[type] || configs.heal;
+    const x = Phaser.Math.Between(150, this.scale.width - 150);
+    const y = Phaser.Math.Between(150, this.scale.height - 200);
+    
+    const container = this.add.container(x, y);
+    container.setData('type', type);
+    container.setData('active', true);
+    container.setData('radius', 30);
+    
+    const glow = this.add.graphics();
+    glow.fillStyle(cfg.color, 0.3);
+    glow.fillCircle(0, 0, 25);
+    container.add(glow);
+    
+    const border = this.add.graphics();
+    border.lineStyle(2, cfg.color, 1);
+    border.strokeCircle(0, 0, 20);
+    container.add(border);
+    
+    const icon = this.add.text(0, 0, cfg.icon, { fontSize: '20px' });
+    icon.setOrigin(0.5);
+    container.add(icon);
+    
+    this.tweens.add({
+      targets: glow,
+      scale: { from: 1, to: 1.6 },
+      alpha: { from: 0.4, to: 0 },
+      duration: 1200, repeat: -1
+    });
+    
+    container.setDepth(30);
+    this.powerups.push(container);
+  }
+  
+  setupUI() {
+    const pad = 20;
+    
+    // Player 1 HP bar
+    this.hpBarBg = this.add.graphics();
+    this.hpBarBg.fillStyle(0x333333, 0.8);
+    this.hpBarBg.fillRoundedRect(pad, pad, 200, 16, 4);
+    this.hpBarBg.lineStyle(2, 0x666666, 1);
+    this.hpBarBg.strokeRoundedRect(pad, pad, 200, 16, 4);
+    this.hpBarBg.setDepth(1000);
+    
+    this.hpBar = this.add.graphics();
+    this.hpBar.setDepth(1001);
+    
+    this.hpText = this.add.text(pad + 100, pad + 28, '100/100', {
+      fontSize: '12px', color: '#ffffff'
+    });
+    this.hpText.setOrigin(0.5);
+    this.hpText.setDepth(1002);
+    
+    // Player 2 HP bar (for two-player mode)
+    if (this.isTwoPlayer) {
+      this.p2HpBarBg = this.add.graphics();
+      this.p2HpBarBg.fillStyle(0x333333, 0.8);
+      this.p2HpBarBg.fillRoundedRect(pad, pad + 40, 200, 16, 4);
+      this.p2HpBarBg.lineStyle(2, 0xff00ff, 1);
+      this.p2HpBarBg.strokeRoundedRect(pad, pad + 40, 200, 16, 4);
+      this.p2HpBarBg.setDepth(1000);
+      
+      this.p2HpBar = this.add.graphics();
+      this.p2HpBar.setDepth(1001);
+      
+      this.p2HpText = this.add.text(pad + 100, pad + 68, 'P2 100/100', {
+        fontSize: '12px', color: '#ff00ff'
+      });
+      this.p2HpText.setOrigin(0.5);
+      this.p2HpText.setDepth(1002);
+    }
+    
+    this.scoreText = this.add.text(this.scale.width/2, pad + 18, 'SCORE: 0', {
+      fontSize: '22px', color: '#ffff00', fontStyle: 'bold'
+    });
+    this.scoreText.setOrigin(0.5);
+    this.scoreText.setDepth(1000);
+    
+    this.waveText = this.add.text(this.scale.width/2, pad + 50, '', {
+      fontSize: '14px', color: '#00ffff'
+    });
+    this.waveText.setOrigin(0.5);
+    this.waveText.setDepth(1000);
+    
+    this.comboText = this.add.text(this.scale.width/2 + 180, pad + 18, '', {
+      fontSize: '18px', color: '#ff6600', fontStyle: 'bold'
+    });
+    this.comboText.setOrigin(0.5);
+    this.comboText.setDepth(1000);
+    
+    // Hint text - update for two-player mode
+    const hintText = this.isTwoPlayer 
+      ? 'P1:WASD+空格 · P2:方向键+回车 · ESC 暂停' 
+      : 'WASD 移动 · 空格射击 · ESC 暂停';
+    this.hintText = this.add.text(this.scale.width - 160, this.scale.height - 20, hintText, {
+      fontSize: '11px', color: '#444444'
+    });
+    this.hintText.setOrigin(0.5);
+    this.hintText.setDepth(1000);
+  }
+  
+  setupInput() {
+    const escKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+    escKey.on('down', () => {
+      this.isPaused = !this.isPaused;
+      if (this.isPaused) {
+        this.showPauseMenu();
+      } else {
+        this.hidePauseMenu();
+      }
+    });
+  }
+  
+  showPauseMenu() {
+    this.pauseOverlay = this.add.graphics();
+    this.pauseOverlay.fillStyle(0x000000, 0.7);
+    this.pauseOverlay.fillRect(0, 0, this.scale.width, this.scale.height);
+    this.pauseOverlay.setDepth(2000);
+    
+    const txt = this.add.text(this.scale.width/2, this.scale.height/2, '⏸ 暂停中', {
+      fontSize: '48px', color: '#00ffff', fontStyle: 'bold'
+    });
+    txt.setOrigin(0.5);
+    txt.setDepth(2001);
+    this.pauseOverlay.add(txt);
+    
+    const hint = this.add.text(this.scale.width/2, this.scale.height/2 + 60, '按 ESC 继续', {
+      fontSize: '18px', color: '#888888'
+    });
+    hint.setOrigin(0.5);
+    hint.setDepth(2001);
+    this.pauseOverlay.add(hint);
+  }
+  
+  hidePauseMenu() {
+    if (this.pauseOverlay) {
+      this.pauseOverlay.destroy();
+      this.pauseOverlay = null;
+    }
+  }
+  
+  showWaveAnnouncement() {
+    const txt = this.add.text(this.scale.width/2, this.scale.height/2, 
+      this.mode === 'survival' ? '第 1 波' : '关卡 ' + this.level, {
+      fontSize: '48px', color: '#00ffff', fontStyle: 'bold'
+    });
+    txt.setOrigin(0.5);
+    txt.setDepth(2000);
+    txt.setAlpha(0);
+    
+    this.tweens.add({
+      targets: txt,
+      alpha: { from: 0, to: 1 },
+      duration: 500,
+      onComplete: () => {
+        this.time.delayedCall(1000, () => {
+          this.tweens.add({
+            targets: txt,
+            alpha: { from: 1, to: 0 },
+            duration: 500,
+            onComplete: () => txt.destroy()
+          });
+        });
+      }
+    });
+  }
+  
+  update(time, delta) {
+    if (this.isPaused || this.isGameOver) return;
+    
+    this.player.update(time, delta);
+    if (this.isTwoPlayer && this.player2) {
+      this.player2.update(time, delta);
+    }
+    this.enemies.forEach(e => e.update(time, delta));
+    this.updateBullets(delta);
+    this.checkCollisions();
+    
+    this.waveTimer += delta;
+    if (this.mode === 'survival' && this.enemies.length === 0 && this.waveTimer > 500) {
+      this.wave++;
+      this.spawnWave();
+      this.waveTimer = 0;
+    }
+    
+    this.powerupTimer -= delta;
+    if (this.powerupTimer <= 0 && this.powerups.length < 5) {
+      this.powerupTimer = 12000;
+      const types = ['heal', 'speed', 'shield', 'double_damage', 'rapid_fire'];
+      this.spawnPowerup(types[Phaser.Math.Between(0, types.length - 1)]);
+    }
+    
+    this.enemies = this.enemies.filter(e => {
+      if (e.isDead) { e.destroy(); return false; }
+      return true;
+    });
+    
+    this.powerups = this.powerups.filter(p => {
+      if (!p.getData('active')) { p.destroy(); return false; }
+      return true;
+    });
+    
+    this.updateUI();
+    this.checkGameState();
+  }
+  
+  updateBullets(delta) {
+    const dt = delta / 1000;
+    const toRemove = [];
+    
+    this.bullets.forEach(bullet => {
+      if (!bullet.getData('active')) {
+        toRemove.push(bullet);
+        return;
+      }
+      
+      const vx = bullet.getData('vx') || 0;
+      const vy = bullet.getData('vy') || 0;
+      const speed = bullet.getData('speed') || 500;
+      
+      bullet.x += vx * speed * dt;
+      bullet.y += vy * speed * dt;
+      
+      if (bullet.x < -10 || bullet.x > this.scale.width + 10 ||
+          bullet.y < -10 || bullet.y > this.scale.height + 10) {
+        bullet.setData('active', false);
+        toRemove.push(bullet);
+      }
+    });
+    
+    toRemove.forEach(b => {
+      const idx = this.bullets.indexOf(b);
+      if (idx > -1) this.bullets.splice(idx, 1);
+      b.destroy();
+    });
+  }
+  
+  checkCollisions() {
+    const player = this.player;
+    const player2 = this.player2;
+    const activePlayers = [player];
+    if (this.isTwoPlayer && player2) activePlayers.push(player2);
+    
+    this.bullets.forEach(bullet => {
+      if (!bullet.getData('active')) return;
+      
+      const owner = bullet.getData('owner') || '';
+      const damage = bullet.getData('damage') || 0;
+      const bx = bullet.x, by = bullet.y;
+      const radius = bullet.getData('radius') || 8;
+      
+      if (owner === 'player' || owner === 'player2') {
+        const shooter = owner === 'player2' ? player2 : player;
+        for (const enemy of this.enemies) {
+          if (enemy.isDead) continue;
+          if (this.isHit(bx, by, enemy, radius)) {
+            const killed = enemy.takeDamage(damage);
+            bullet.setData('active', false);
+            bullet.destroy();
+            if (killed && shooter) {
+              shooter.onEnemyKilled(enemy);
+            }
+            break;
+          }
+        }
+      }
+      
+      if (owner === 'enemy' || owner === 'boss') {
+        for (const p of activePlayers) {
+          if (p && !p.isDead && this.isHit(bx, by, p, radius)) {
+            const dead = p.takeDamage(damage);
+            bullet.setData('active', false);
+            bullet.destroy();
+            if (dead) {
+              // Check if all players are dead
+              const allDead = activePlayers.every(pl => pl.isDead);
+              if (allDead) this.gameOver(false);
+            }
+            break;
+          }
+        }
+      }
+    });
+    
+    // Enemy body collision with players
+    activePlayers.forEach(p => {
+      if (!p || p.isDead) return;
+      this.enemies.forEach(enemy => {
+        if (enemy.isDead) return;
+        if (this.isHit(p.x, p.y, enemy, 28)) {
+          if (enemy.enemyType === 'suicide') {
+            enemy.takeDamage(9999);
+            p.takeDamage(30);
+          } else {
+            p.takeDamage(8);
+          }
+          if (p.isDead) {
+            const allDead = activePlayers.every(pl => pl.isDead);
+            if (allDead) this.gameOver(false);
+          }
+        }
+      });
+    });
+    
+    // Powerup collection
+    activePlayers.forEach(p => {
+      if (!p || p.isDead) return;
+      this.powerups.forEach(pu => {
+        if (!pu.getData('active')) return;
+        const dx = p.x - pu.x;
+        const dy = p.y - pu.y;
+        if (Math.sqrt(dx*dx + dy*dy) < 45) {
+          this.applyPowerup(p, pu.getData('type'));
+          pu.setData('active', false);
+          pu.destroy();
+        }
+      });
+    });
+  }
+  
+  isHit(x1, y1, obj2, r1) {
+    const dx = x1 - obj2.x;
+    const dy = y1 - obj2.y;
+    const r2 = (obj2.size || 32) / 2;
+    return Math.sqrt(dx*dx + dy*dy) < r1 + r2;
+  }
+  
+  applyPowerup(player, type) {
+    const effects = {
+      heal: () => player.heal(30),
+      speed: () => player.addEffect('speed', 10000),
+      shield: () => player.addEffect('shield', 8000),
+      double_damage: () => player.addEffect('double_damage', 12000),
+      rapid_fire: () => player.addEffect('rapid_fire', 8000)
+    };
+    if (effects[type]) effects[type]();
+    
+    const particles = this.add.graphics();
+    particles.fillStyle(0x00ff00, 0.8);
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2;
+      particles.fillCircle(player.x + Math.cos(angle) * 25, player.y + Math.sin(angle) * 25, 4);
+    }
+    this.tweens.add({
+      targets: particles,
+      alpha: { from: 0.8, to: 0 },
+      scale: { from: 1, to: 2 },
+      duration: 400,
+      onComplete: () => particles.destroy()
+    });
+  }
+  
+  updateUI() {
+    if (!this.player) return;
+    
+    const hpPct = this.player.getHp() / this.player.getMaxHp();
+    const pad = 20;
+    
+    this.hpBar.clear();
+    let color = 0x00ff00;
+    if (hpPct < 0.3) color = 0xff0000;
+    else if (hpPct < 0.6) color = 0xffff00;
+    this.hpBar.fillStyle(color, 1);
+    this.hpBar.fillRoundedRect(pad, pad, 200 * hpPct, 16, 4);
+    
+    if (this.player.hasEffect('shield')) {
+      this.hpBar.fillStyle(0x00ffff, 0.6);
+      this.hpBar.fillRoundedRect(pad, pad - 6, 200, 4, 2);
+    }
+    if (this.player.hasEffect('double_damage')) {
+      this.hpBar.fillStyle(0xff4500, 0.6);
+      this.hpBar.fillRoundedRect(pad, pad - 12, 200, 4, 2);
+    }
+    
+    this.hpText.setText(Math.ceil(this.player.getHp()) + ' / ' + this.player.getMaxHp());
+    this.scoreText.setText('SCORE: ' + this.player.getTotalScore());
+    
+    // Update Player 2 HP bar
+    if (this.isTwoPlayer && this.player2 && this.p2HpBar) {
+      const p2HpPct = this.player2.getHp() / this.player2.getMaxHp();
+      this.p2HpBar.clear();
+      let p2Color = 0xff00ff;
+      if (p2HpPct < 0.3) p2Color = 0xff0000;
+      else if (p2HpPct < 0.6) p2Color = 0xffff00;
+      this.p2HpBar.fillStyle(p2Color, 1);
+      this.p2HpBar.fillRoundedRect(pad, pad + 40, 200 * p2HpPct, 16, 4);
+      this.p2HpText.setText('P2 ' + Math.ceil(this.player2.getHp()) + ' / ' + this.player2.getMaxHp());
+      
+      // Combine scores
+      const totalScore = this.player.getTotalScore() + (this.player2.getTotalScore() || 0);
+      this.scoreText.setText('SCORE: ' + totalScore);
+    }
+    
+    if (this.mode === 'survival') {
+      this.waveText.setText('第 ' + this.wave + ' 波 · 剩余敌人: ' + this.enemies.length);
+    } else {
+      this.waveText.setText('关卡 ' + this.level + ' · 剩余敌人: ' + this.enemies.length);
+    }
+    
+    if (this.player.comboCount > 1) {
+      this.comboText.setText('x' + this.player.comboCount + ' COMBO');
+      this.comboText.setAlpha(1);
+    } else {
+      this.comboText.setAlpha(0);
+    }
+  }
+  
+  checkGameState() {
+    // Check if all players are dead
+    const p1Dead = !this.player || this.player.isDead;
+    const p2Dead = !this.isTwoPlayer || !this.player2 || this.player2.isDead;
+    if (p1Dead && p2Dead && !this.isGameOver) {
+      this.gameOver(false);
+    }
+    
+    if (this.enemies.length === 0 && this.mode !== 'survival' && !this.isGameOver) {
+      this.levelComplete();
+    }
+  }
+  
+  spawnWave() {
+    const types = this.getEnemyTypes();
+    const count = Math.min(3 + this.wave, 10);
+    for (let i = 0; i < count; i++) {
+      this.spawnEnemy(types[Phaser.Math.Between(0, types.length - 1)]);
+    }
+    
+    if (this.wave % 5 === 0) {
+      const bossTypes = ['warden', 'hunter', 'overlord'];
+      const bossType = bossTypes[Math.min(Math.floor(this.wave / 5) - 1, 2)];
+      this.scene.start('BossScene', { bossType, waveCount: this.wave, mode: this.mode });
+      this.isGameOver = true;
+    }
+  }
+  
+  levelComplete() {
+    this.isGameOver = true;
+    this.showResult(true);
+  }
+  
+  gameOver(won) {
+    this.isGameOver = true;
+    this.showResult(won);
+  }
+  
+  showResult(won) {
+    const overlay = this.add.graphics();
+    overlay.fillStyle(0x000000, 0.85);
+    overlay.fillRect(0, 0, this.scale.width, this.scale.height);
+    overlay.setDepth(3000);
+    
+    const resultTxt = this.add.text(
+      this.scale.width/2, this.scale.height/2 - 80,
+      won ? '🎉 胜利!' : '💀 失败',
+      { fontSize: '64px', color: won ? '#00ff00' : '#ff0000', fontStyle: 'bold' }
+    );
+    resultTxt.setOrigin(0.5);
+    resultTxt.setDepth(3001);
+    
+    const scoreTxt = this.add.text(
+      this.scale.width/2, this.scale.height/2 + 30,
+      '得分: ' + (this.player ? this.player.getTotalScore() : 0) + ' | 击杀: ' + (this.player ? this.player.getKills() : 0),
+      { fontSize: '24px', color: '#ffff00' }
+    );
+    scoreTxt.setOrigin(0.5);
+    scoreTxt.setDepth(3001);
+    
+    this.createButton(this.scale.width/2 - 130, this.scale.height/2 + 150, '重新开始', () => {
+      this.scene.restart({ mode: this.mode, level: this.level });
+    });
+    
+    this.createButton(this.scale.width/2 + 130, this.scale.height/2 + 150, '返回菜单', () => {
+      this.scene.start('MenuScene');
+    });
+  }
+  
+  createButton(x, y, text, onClick) {
+    const width = 180, height = 55;
+    const container = this.add.container(x, y);
+    container.setDepth(3001);
+    
+    const bg = this.add.graphics();
+    bg.fillStyle(0x0a0a2e, 0.9);
+    bg.fillRoundedRect(-width/2, -height/2, width, height, 10);
+    bg.lineStyle(2, 0x00ffff, 1);
+    bg.strokeRoundedRect(-width/2, -height/2, width, height, 10);
+    container.add(bg);
+    
+    const label = this.add.text(0, 0, text, {
+      fontSize: '18px', color: '#00ffff', fontStyle: 'bold'
+    });
+    label.setOrigin(0.5);
+    container.add(label);
+    
+    container.setInteractive(
+      new Phaser.Geom.Rectangle(-width/2, -height/2, width, height),
+      Phaser.Geom.Rectangle.Contains
+    );
+    
+    container.on('pointerover', () => {
+      bg.clear();
+      bg.fillStyle(0x00ffff, 0.2);
+      bg.fillRoundedRect(-width/2, -height/2, width, height, 10);
+    });
+    
+    container.on('pointerout', () => {
+      bg.clear();
+      bg.fillStyle(0x0a0a2e, 0.9);
+      bg.fillRoundedRect(-width/2, -height/2, width, height, 10);
+      bg.lineStyle(2, 0x00ffff, 1);
+      bg.strokeRoundedRect(-width/2, -height/2, width, height, 10);
+    });
+    
+    container.on('pointerdown', onClick);
+  }
+  
+  shutdown() {
+    this.bullets.forEach(b => b.destroy());
+    this.enemies.forEach(e => e.destroy());
+    this.powerups.forEach(p => p.destroy());
+    if (this.player) this.player.destroy();
+  }
+}
+
+// ============ Boss场景 ============
+class BossScene extends Phaser.Scene {
+  constructor() {
+    super('BossScene');
+  }
+  
+  init(data) {
+    this.bossType = data.bossType || 'warden';
+    this.waveCount = data.waveCount || 0;
+    this.isTwoPlayer = data.mode === 'two_player' || this.registry.get('isTwoPlayer') || false;
+  }
+  
+  create() {
+    this.bullets = [];
+    this.enemies = [];
+    this.powerups = [];
+    this.isGameOver = false;
+    this.isPaused = false;
+    this.spawnTimer = 0;
+    this.powerupTimer = 15000;
+    
+    this.createBackground();
+    this.createPlayer();
+    this.createBoss();
+    this.setupUI();
+    this.setupInput();
+    
+    this.registry.set('playerTank', this.player);
+    
+    this.showBossAnnouncement();
+  }
+  
+  createBackground() {
+    // 检查背景图片是否加载成功
+    const bgTexture = this.textures.exists('background');
+    
+    if (bgTexture) {
+      const bg = this.add.image(this.scale.width/2, this.scale.height/2, 'background');
+      bg.setDisplaySize(this.scale.width, this.scale.height);
+      bg.setDepth(-10);
+      bg.setAlpha(0.7);
+    } else {
+      // 创建渐变背景作为回退
+      const bg = this.add.graphics();
+      bg.fillGradientStyle(0x1a0a0a, 0x1a0a0a, 0x2a1a1a, 0x2a1a1a, 1);
+      bg.fillRect(0, 0, this.scale.width, this.scale.height);
+      bg.setDepth(-10);
+    }
+    
+    const overlay = this.add.graphics();
+    overlay.fillStyle(0xff0000, 0.2);
+    overlay.fillRect(0, 0, this.scale.width, this.scale.height);
+    overlay.setDepth(-9);
+    
+    const grid = this.add.graphics();
+    grid.lineStyle(1, 0xff0066, 0.1);
+    for (let x = 0; x < this.scale.width; x += 60) {
+      grid.lineBetween(x, 0, x, this.scale.height);
+    }
+    for (let y = 0; y < this.scale.height; y += 60) {
+      grid.lineBetween(0, y, this.scale.width, y);
+    }
+    grid.setDepth(-8);
+    
+    const border = this.add.graphics();
+    border.lineStyle(4, 0xff0000, 0.8);
+    border.strokeRect(8, 8, this.scale.width - 16, this.scale.height - 16);
+    border.setDepth(-7);
+    
+    this.tweens.add({
+      targets: border,
+      alpha: { from: 0.8, to: 0.3 },
+      duration: 500,
+      yoyo: true,
+      repeat: -1
+    });
+    
+    const cornerSize = 80;
+    const corners = [
+      { x: 0, y: 0, dx: 1, dy: 1 },
+      { x: this.scale.width, y: 0, dx: -1, dy: 1 },
+      { x: 0, y: this.scale.height, dx: 1, dy: -1 },
+      { x: this.scale.width, y: this.scale.height, dx: -1, dy: -1 }
+    ];
+    
+    corners.forEach(c => {
+      const corner = this.add.graphics();
+      corner.lineStyle(3, 0xff0066, 0.8);
+      corner.beginPath();
+      corner.moveTo(c.x + c.dx * cornerSize, c.y);
+      corner.lineTo(c.x, c.y);
+      corner.lineTo(c.x, c.y + c.dy * cornerSize);
+      corner.strokePath();
+      corner.setDepth(-6);
+    });
+    
+    this.createXCILogo();
+  }
+  
+  createXCILogo() {
+    const bw = 100, bh = 40, margin = 20;
+    const lx = this.scale.width - bw/2 - margin;
+    const ly = bh/2 + margin;
+    
+    const bg = this.add.graphics();
+    bg.fillStyle(0x000000, 0.6);
+    bg.fillRoundedRect(lx - bw/2, ly - bh/2, bw, bh, 8);
+    bg.lineStyle(1, 0xff0066, 0.8);
+    bg.strokeRoundedRect(lx - bw/2, ly - bh/2, bw, bh, 8);
+    bg.setDepth(1000);
+    
+    const txt = this.add.text(lx, ly, 'XCY', {
+      fontSize: '22px', color: '#ff0066', fontStyle: 'bold'
+    });
+    txt.setOrigin(0.5);
+    txt.setDepth(1001);
+    
+    this.tweens.add({
+      targets: [bg, txt],
+      alpha: { from: 0.7, to: 1 },
+      duration: 1000, yoyo: true, repeat: -1
+    });
+  }
+  
+  createPlayer() {
+    this.player = new PlayerTank(this, this.scale.width/2 - 60, this.scale.height - 100);
+    this.player.setDepth(50);
+    
+    // 双人模式 - 创建玩家2
+    if (this.isTwoPlayer) {
+      this.player2 = new PlayerTank2(this, this.scale.width/2 + 60, this.scale.height - 100);
+      this.player2.setDepth(50);
+      this.registry.set('playerTank2', this.player2);
+    }
+  }
+  
+  createBoss() {
+    const bossNames = { warden: '守护者', hunter: '猎手', overlord: '霸主' };
+    this.boss = new BossTank(this, this.scale.width/2, 120, this.bossType);
+    this.boss.setDepth(45);
+  }
+  
+  setupUI() {
+    const pad = 20;
+    
+    // Player 1 HP bar
+    this.hpBarBg = this.add.graphics();
+    this.hpBarBg.fillStyle(0x333333, 0.8);
+    this.hpBarBg.fillRoundedRect(pad, this.scale.height - 50, 200, 16, 4);
+    this.hpBarBg.setDepth(1000);
+    
+    this.hpBar = this.add.graphics();
+    this.hpBar.setDepth(1001);
+    
+    this.hpText = this.add.text(pad + 100, this.scale.height - 22, '100/100', {
+      fontSize: '12px', color: '#ffffff'
+    });
+    this.hpText.setOrigin(0.5);
+    this.hpText.setDepth(1002);
+    
+    // Player 2 HP bar (for two-player mode)
+    if (this.isTwoPlayer) {
+      this.p2HpBarBg = this.add.graphics();
+      this.p2HpBarBg.fillStyle(0x333333, 0.8);
+      this.p2HpBarBg.fillRoundedRect(pad + 220, this.scale.height - 50, 200, 16, 4);
+      this.p2HpBarBg.lineStyle(2, 0xff00ff, 1);
+      this.p2HpBarBg.strokeRoundedRect(pad + 220, this.scale.height - 50, 200, 16, 4);
+      this.p2HpBarBg.setDepth(1000);
+      
+      this.p2HpBar = this.add.graphics();
+      this.p2HpBar.setDepth(1001);
+      
+      this.p2HpText = this.add.text(pad + 320, this.scale.height - 22, 'P2 100/100', {
+        fontSize: '12px', color: '#ff00ff'
+      });
+      this.p2HpText.setOrigin(0.5);
+      this.p2HpText.setDepth(1002);
+    }
+    
+    this.scoreText = this.add.text(this.scale.width/2, this.scale.height - 42, 'SCORE: 0', {
+      fontSize: '22px', color: '#ffff00', fontStyle: 'bold'
+    });
+    this.scoreText.setOrigin(0.5);
+    this.scoreText.setDepth(1000);
+    
+    // Hint text - update for two-player mode
+    const hintText = this.isTwoPlayer 
+      ? 'P1:WASD+空格 · P2:方向键+回车 · ESC 暂停' 
+      : 'WASD 移动 · 空格射击 · ESC 暂停';
+    this.hintText = this.add.text(this.scale.width - 160, this.scale.height - 20, hintText, {
+      fontSize: '11px', color: '#444444'
+    });
+    this.hintText.setOrigin(0.5);
+    this.hintText.setDepth(1000);
+  }
+  
+  setupInput() {
+    const escKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+    escKey.on('down', () => {
+      this.isPaused = !this.isPaused;
+      if (this.isPaused) {
+        this.showPauseMenu();
+      } else {
+        this.hidePauseMenu();
+      }
+    });
+  }
+  
+  showPauseMenu() {
+    this.pauseOverlay = this.add.graphics();
+    this.pauseOverlay.fillStyle(0x000000, 0.7);
+    this.pauseOverlay.fillRect(0, 0, this.scale.width, this.scale.height);
+    this.pauseOverlay.setDepth(2000);
+    
+    const txt = this.add.text(this.scale.width/2, this.scale.height/2, '⏸ 暂停中', {
+      fontSize: '48px', color: '#ff0066', fontStyle: 'bold'
+    });
+    txt.setOrigin(0.5);
+    txt.setDepth(2001);
+    this.pauseOverlay.add(txt);
+    
+    const hint = this.add.text(this.scale.width/2, this.scale.height/2 + 60, '按 ESC 继续', {
+      fontSize: '18px', color: '#888888'
+    });
+    hint.setOrigin(0.5);
+    hint.setDepth(2001);
+    this.pauseOverlay.add(hint);
+  }
+  
+  hidePauseMenu() {
+    if (this.pauseOverlay) {
+      this.pauseOverlay.destroy();
+      this.pauseOverlay = null;
+    }
+  }
+  
+  showBossAnnouncement() {
+    const bossNames = { warden: '守护者', hunter: '猎手', overlord: '霸主' };
+    
+    this.cameras.main.shake(500, 0.02);
+    
+    const warning = this.add.text(
+      this.scale.width/2, this.scale.height/2 - 80,
+      '⚠ BOSS 来袭 ⚠',
+      { fontSize: '52px', color: '#ff0066', fontStyle: 'bold' }
+    );
+    warning.setOrigin(0.5);
+    warning.setDepth(2000);
+    warning.setAlpha(0);
+    
+    const bossName = this.add.text(
+      this.scale.width/2, this.scale.height/2 + 20,
+      bossNames[this.bossType] || 'BOSS',
+      { fontSize: '40px', color: '#ffffff', fontStyle: 'bold' }
+    );
+    bossName.setOrigin(0.5);
+    bossName.setDepth(2000);
+    bossName.setAlpha(0);
+    
+    this.tweens.add({
+      targets: warning, alpha: { from: 0, to: 1 }, duration: 500
+    });
+    
+    this.tweens.add({
+      targets: bossName,
+      alpha: { from: 0, to: 1 },
+      duration: 500, delay: 300
+    });
+    
+    this.time.delayedCall(1800, () => {
+      this.tweens.add({
+        targets: [warning, bossName],
+        alpha: { from: 1, to: 0 },
+        duration: 500,
+        onComplete: () => {
+          warning.destroy();
+          bossName.destroy();
+        }
+      });
+    });
+  }
+  
+  update(time, delta) {
+    if (this.isPaused || this.isGameOver) return;
+    
+    this.player.update(time, delta);
+    if (this.isTwoPlayer && this.player2) {
+      this.player2.update(time, delta);
+    }
+    if (this.boss) this.boss.update(time, delta);
+    this.enemies.forEach(e => e.update(time, delta));
+    this.updateBullets(delta);
+    this.checkCollisions();
+    
+    this.spawnTimer += delta;
+    if (this.spawnTimer > 8000 && this.enemies.length < 3) {
+      this.spawnTimer = 0;
+      const types = ['normal', 'fast'];
+      const side = Phaser.Math.Between(0, 3);
+      let x, y;
+      switch(side) {
+        case 0: x = Phaser.Math.Between(150, this.scale.width - 150); y = 150; break;
+        case 1: x = this.scale.width - 150; y = Phaser.Math.Between(150, this.scale.height - 250); break;
+        case 2: x = Phaser.Math.Between(150, this.scale.width - 150); y = 150; break;
+        default: x = 150; y = Phaser.Math.Between(150, this.scale.height - 250);
+      }
+      const enemy = new EnemyTank(this, x, y, types[Phaser.Math.Between(0, types.length - 1)]);
+      enemy.setDepth(40);
+      this.enemies.push(enemy);
+    }
+    
+    this.powerupTimer -= delta;
+    if (this.powerupTimer <= 0 && this.powerups.length < 2) {
+      this.powerupTimer = 15000;
+      const types = ['heal', 'shield'];
+      this.spawnPowerup(types[Phaser.Math.Between(0, types.length - 1)]);
+    }
+    
+    this.enemies = this.enemies.filter(e => {
+      if (e.isDead) { e.destroy(); return false; }
+      return true;
+    });
+    
+    this.powerups = this.powerups.filter(p => {
+      if (!p.getData('active')) { p.destroy(); return false; }
+      return true;
+    });
+    
+    this.updateUI();
+    this.checkGameState();
+  }
+  
+  updateBullets(delta) {
+    const dt = delta / 1000;
+    const toRemove = [];
+    
+    this.bullets.forEach(bullet => {
+      if (!bullet.getData('active')) {
+        toRemove.push(bullet);
+        return;
+      }
+      
+      const vx = bullet.getData('vx') || 0;
+      const vy = bullet.getData('vy') || 0;
+      const speed = bullet.getData('speed') || 500;
+      
+      bullet.x += vx * speed * dt;
+      bullet.y += vy * speed * dt;
+      
+      if (bullet.x < -10 || bullet.x > this.scale.width + 10 ||
+          bullet.y < -10 || bullet.y > this.scale.height + 10) {
+        bullet.setData('active', false);
+        toRemove.push(bullet);
+      }
+    });
+    
+    toRemove.forEach(b => {
+      const idx = this.bullets.indexOf(b);
+      if (idx > -1) this.bullets.splice(idx, 1);
+      b.destroy();
+    });
+  }
+  
+  checkCollisions() {
+    const player = this.player;
+    const player2 = this.player2;
+    const activePlayers = [player];
+    if (this.isTwoPlayer && player2) activePlayers.push(player2);
+    
+    this.bullets.forEach(bullet => {
+      if (!bullet.getData('active')) return;
+      
+      const owner = bullet.getData('owner') || '';
+      const damage = bullet.getData('damage') || 0;
+      const bx = bullet.x, by = bullet.y;
+      const radius = bullet.getData('radius') || 8;
+      
+      if (owner === 'player' || owner === 'player2') {
+        const shooter = owner === 'player2' ? player2 : player;
+        // Check Boss
+        if (this.boss && !this.boss.isDead && this.isHit(bx, by, this.boss, radius)) {
+          const killed = this.boss.takeDamage(damage);
+          bullet.setData('active', false);
+          bullet.destroy();
+          if (killed && shooter) {
+            shooter.onEnemyKilled(this.boss);
+            this.boss = null;
+          }
+          return;
+        }
+        // Check enemies
+        for (const enemy of this.enemies) {
+          if (enemy.isDead) continue;
+          if (this.isHit(bx, by, enemy, radius)) {
+            const killed = enemy.takeDamage(damage);
+            bullet.setData('active', false);
+            bullet.destroy();
+            if (killed && shooter) shooter.onEnemyKilled(enemy);
+            break;
+          }
+        }
+      }
+      
+      if (owner === 'enemy' || owner === 'boss') {
+        for (const p of activePlayers) {
+          if (p && !p.isDead && this.isHit(bx, by, p, radius)) {
+            const dead = p.takeDamage(damage);
+            bullet.setData('active', false);
+            bullet.destroy();
+            if (dead) {
+              const allDead = activePlayers.every(pl => pl.isDead);
+              if (allDead) this.gameOver(false);
+            }
+            break;
+          }
+        }
+      }
+    });
+    
+    // Enemy body collision with players
+    activePlayers.forEach(p => {
+      if (!p || p.isDead) return;
+      this.enemies.forEach(enemy => {
+        if (enemy.isDead) return;
+        if (this.isHit(p.x, p.y, enemy, 28)) {
+          if (enemy.enemyType === 'suicide') {
+            enemy.takeDamage(9999);
+            p.takeDamage(30);
+          } else {
+            p.takeDamage(10);
+          }
+          if (p.isDead) {
+            const allDead = activePlayers.every(pl => pl.isDead);
+            if (allDead) this.gameOver(false);
+          }
+        }
+      });
+      
+      // Boss body collision
+      if (this.boss && !this.boss.isDead && this.isHit(p.x, p.y, this.boss, 35)) {
+        p.takeDamage(20);
+        if (p.isDead) {
+          const allDead = activePlayers.every(pl => pl.isDead);
+          if (allDead) this.gameOver(false);
+        }
+      }
+    });
+    
+    // Powerup collection for all active players
+    activePlayers.forEach(p => {
+      if (!p || p.isDead) return;
+      this.powerups.forEach(pu => {
+        if (!pu.getData('active')) return;
+        const dx = p.x - pu.x;
+        const dy = p.y - pu.y;
+        if (Math.sqrt(dx*dx + dy*dy) < 45) {
+          this.applyPowerup(p, pu.getData('type'));
+          pu.setData('active', false);
+          pu.destroy();
+        }
+      });
+    });
+  }
+  
+  isHit(x1, y1, obj2, r1) {
+    const dx = x1 - obj2.x;
+    const dy = y1 - obj2.y;
+    const r2 = (obj2.size || 32) / 2;
+    return Math.sqrt(dx*dx + dy*dy) < r1 + r2;
+  }
+  
+  applyPowerup(player, type) {
+    const effects = {
+      heal: () => player.heal(30),
+      speed: () => player.addEffect('speed', 10000),
+      shield: () => player.addEffect('shield', 8000),
+      double_damage: () => player.addEffect('double_damage', 12000),
+      rapid_fire: () => player.addEffect('rapid_fire', 8000)
+    };
+    if (effects[type]) effects[type]();
+    
+    const particles = this.add.graphics();
+    particles.fillStyle(0xff0066, 0.8);
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2;
+      particles.fillCircle(player.x + Math.cos(angle) * 25, player.y + Math.sin(angle) * 25, 4);
+    }
+    this.tweens.add({
+      targets: particles,
+      alpha: { from: 0.8, to: 0 },
+      scale: { from: 1, to: 2 },
+      duration: 400,
+      onComplete: () => particles.destroy()
+    });
+  }
+  
+  updateUI() {
+    if (!this.player) return;
+    
+    const hpPct = this.player.getHp() / this.player.getMaxHp();
+    const pad = 20;
+    
+    this.hpBar.clear();
+    let color = 0x00ff00;
+    if (hpPct < 0.3) color = 0xff0000;
+    else if (hpPct < 0.6) color = 0xffff00;
+    this.hpBar.fillStyle(color, 1);
+    this.hpBar.fillRoundedRect(pad, this.scale.height - 50, 200 * hpPct, 16, 4);
+    
+    this.hpText.setText(Math.ceil(this.player.getHp()) + ' / ' + this.player.getMaxHp());
+    
+    // Update Player 2 HP bar
+    if (this.isTwoPlayer && this.player2 && this.p2HpBar) {
+      const p2HpPct = this.player2.getHp() / this.player2.getMaxHp();
+      this.p2HpBar.clear();
+      let p2Color = 0xff00ff;
+      if (p2HpPct < 0.3) p2Color = 0xff0000;
+      else if (p2HpPct < 0.6) p2Color = 0xffff00;
+      this.p2HpBar.fillStyle(p2Color, 1);
+      this.p2HpBar.fillRoundedRect(pad + 220, this.scale.height - 50, 200 * p2HpPct, 16, 4);
+      this.p2HpText.setText('P2 ' + Math.ceil(this.player2.getHp()) + ' / ' + this.player2.getMaxHp());
+      
+      // Combine scores
+      const totalScore = this.player.getTotalScore() + (this.player2.getTotalScore() || 0);
+      this.scoreText.setText('SCORE: ' + totalScore);
+    } else {
+      this.scoreText.setText('SCORE: ' + this.player.getTotalScore());
+    }
+  }
+  
+  spawnPowerup(type) {
+    const configs = {
+      heal: { color: 0x00ff00, icon: '❤' },
+      speed: { color: 0xffff00, icon: '⚡' },
+      shield: { color: 0x00ffff, icon: '🛡' },
+      double_damage: { color: 0xff4500, icon: '💥' },
+      rapid_fire: { color: 0xffd700, icon: '🔫' }
+    };
+    const cfg = configs[type] || configs.heal;
+    const x = Phaser.Math.Between(150, this.scale.width - 150);
+    const y = Phaser.Math.Between(150, this.scale.height - 200);
+    
+    const container = this.add.container(x, y);
+    container.setData('type', type);
+    container.setData('active', true);
+    container.setData('radius', 30);
+    
+    const glow = this.add.graphics();
+    glow.fillStyle(cfg.color, 0.3);
+    glow.fillCircle(0, 0, 25);
+    container.add(glow);
+    
+    const border = this.add.graphics();
+    border.lineStyle(2, cfg.color, 1);
+    border.strokeCircle(0, 0, 20);
+    container.add(border);
+    
+    const icon = this.add.text(0, 0, cfg.icon, { fontSize: '20px' });
+    icon.setOrigin(0.5);
+    container.add(icon);
+    
+    this.tweens.add({
+      targets: glow,
+      scale: { from: 1, to: 1.6 },
+      alpha: { from: 0.4, to: 0 },
+      duration: 1200, repeat: -1
+    });
+    
+    container.setDepth(30);
+    this.powerups.push(container);
+  }
+  
+  checkGameState() {
+    // Check if all players are dead
+    const p1Dead = !this.player || this.player.isDead;
+    const p2Dead = !this.isTwoPlayer || !this.player2 || this.player2.isDead;
+    if (p1Dead && p2Dead && !this.isGameOver) {
+      this.gameOver(false);
+    }
+    
+    if (this.boss && this.boss.isDead && !this.isGameOver) {
+      this.boss = null;
+      this.gameOver(true);
+    }
+  }
+  
+  gameOver(won) {
+    this.isGameOver = true;
+    this.showResult(won);
+  }
+  
+  showResult(won) {
+    const bossNames = { warden: '守护者', hunter: '猎手', overlord: '霸主' };
+    
+    const overlay = this.add.graphics();
+    overlay.fillStyle(0x000000, 0.88);
+    overlay.fillRect(0, 0, this.scale.width, this.scale.height);
+    overlay.setDepth(3000);
+    
+    const resultTxt = this.add.text(
+      this.scale.width/2, this.scale.height/2 - 100,
+      won ? '🎉 BOSS 击败!' : '💀 挑战失败',
+      { fontSize: '56px', color: won ? '#00ff00' : '#ff0000', fontStyle: 'bold' }
+    );
+    resultTxt.setOrigin(0.5);
+    resultTxt.setDepth(3001);
+    
+    const bossTxt = this.add.text(
+      this.scale.width/2, this.scale.height/2 - 20,
+      'Boss: ' + (bossNames[this.bossType] || 'BOSS'),
+      { fontSize: '20px', color: '#ff0066' }
+    );
+    bossTxt.setOrigin(0.5);
+    bossTxt.setDepth(3001);
+    
+    const p1Score = this.player ? this.player.getTotalScore() : 0;
+    const p1Kills = this.player ? this.player.getKills() : 0;
+    const p2Score = (this.isTwoPlayer && this.player2) ? this.player2.getTotalScore() : 0;
+    const p2Kills = (this.isTwoPlayer && this.player2) ? this.player2.getKills() : 0;
+    const totalScore = p1Score + p2Score;
+    const totalKills = p1Kills + p2Kills;
+    
+    let scoreText = '得分: ' + p1Score + ' | 击杀: ' + p1Kills;
+    if (this.isTwoPlayer) {
+      scoreText = 'P1: ' + p1Score + ' / P2: ' + p2Score + ' | 总分: ' + totalScore + ' | 击杀: ' + totalKills;
+    }
+    
+    const scoreTxt = this.add.text(
+      this.scale.width/2, this.scale.height/2 + 20,
+      scoreText,
+      { fontSize: '22px', color: '#ffff00' }
+    );
+    scoreTxt.setOrigin(0.5);
+    scoreTxt.setDepth(3001);
+    
+    const bossIndex = ['warden', 'hunter', 'overlord'].indexOf(this.bossType);
+    if (won && bossIndex < 2) {
+      const nextBoss = ['warden', 'hunter', 'overlord'][bossIndex + 1];
+      this.createButton(this.scale.width/2, this.scale.height/2 + 100, '挑战下一个 BOSS', () => {
+        this.scene.start('BossScene', { bossType: nextBoss, waveCount: this.waveCount + 1, mode: this.isTwoPlayer ? 'two_player' : 'single' });
+      }, 220);
+    }
+    
+    this.createButton(this.scale.width/2 - 140, this.scale.height/2 + 170, '重新挑战', () => {
+      this.scene.restart({ bossType: this.bossType, waveCount: this.waveCount, mode: this.isTwoPlayer ? 'two_player' : 'single' });
+    }, 160);
+    
+    this.createButton(this.scale.width/2 + 140, this.scale.height/2 + 170, '返回菜单', () => {
+      this.scene.start('MenuScene');
+    }, 160);
+  }
+  
+  createButton(x, y, text, onClick, width = 180) {
+    const height = 55;
+    const container = this.add.container(x, y);
+    container.setDepth(3001);
+    
+    const bg = this.add.graphics();
+    bg.fillStyle(0x2a0a2a, 0.9);
+    bg.fillRoundedRect(-width/2, -height/2, width, height, 10);
+    bg.lineStyle(2, 0xff0066, 1);
+    bg.strokeRoundedRect(-width/2, -height/2, width, height, 10);
+    container.add(bg);
+    
+    const label = this.add.text(0, 0, text, {
+      fontSize: '18px', color: '#ff0066', fontStyle: 'bold'
+    });
+    label.setOrigin(0.5);
+    container.add(label);
+    
+    container.setInteractive(
+      new Phaser.Geom.Rectangle(-width/2, -height/2, width, height),
+      Phaser.Geom.Rectangle.Contains
+    );
+    
+    container.on('pointerover', () => {
+      bg.clear();
+      bg.fillStyle(0xff0066, 0.2);
+      bg.fillRoundedRect(-width/2, -height/2, width, height, 10);
+    });
+    
+    container.on('pointerout', () => {
+      bg.clear();
+      bg.fillStyle(0x2a0a2a, 0.9);
+      bg.fillRoundedRect(-width/2, -height/2, width, height, 10);
+      bg.lineStyle(2, 0xff0066, 1);
+      bg.strokeRoundedRect(-width/2, -height/2, width, height, 10);
+    });
+    
+    container.on('pointerdown', onClick);
+  }
+  
+  spawnEnemy(type) {
+    const side = Phaser.Math.Between(0, 3);
+    let x, y;
+    switch(side) {
+      case 0: x = Phaser.Math.Between(150, this.scale.width - 150); y = 150; break;
+      case 1: x = this.scale.width - 150; y = Phaser.Math.Between(150, this.scale.height - 250); break;
+      case 2: x = Phaser.Math.Between(150, this.scale.width - 150); y = 150; break;
+      default: x = 150; y = Phaser.Math.Between(150, this.scale.height - 250);
+    }
+    const enemy = new EnemyTank(this, x, y, type);
+    enemy.setDepth(40);
+    this.enemies.push(enemy);
+  }
+  
+  shutdown() {
+    this.bullets.forEach(b => b.destroy());
+    this.enemies.forEach(e => e.destroy());
+    this.powerups.forEach(p => p.destroy());
+    if (this.boss) this.boss.destroy();
+    if (this.player) this.player.destroy();
+  }
+}
+
+// ============ 启动游戏 ============
+window.addEventListener('load', () => {
+  const config = {
+    type: Phaser.AUTO,
+    parent: 'game-container',
+    width: GAME_WIDTH,
+    height: GAME_HEIGHT,
+    backgroundColor: '#000000',
+    scale: {
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+    },
+    scene: [MenuScene, GameScene, BossScene],
+    render: {
+      antialias: true,
+      pixelArt: false,
+    },
+  };
+  
+  // 启动场景：预加载资源并确保游戏能正常启动
+  class BootScene extends Phaser.Scene {
+    constructor() {
+      super('BootScene');
+    }
+    
+    preload() {
+      // 注册加载错误监听，防止加载失败时游戏卡死
+      this.load.on('loaderror', (file) => {
+        console.warn('资源加载失败:', file.key, file.src);
+      });
+      
+      // 加载背景图片
+      // 注意：路径使用相对路径，index.html 所在目录为根
+      // 背景图位于同级 public 目录下
+      this.load.image('background', 'public/背景.jpg');
+    }
+    
+    create() {
+      // 检查背景图是否加载成功（纹理存在即加载成功）
+      const bgOk = this.textures.exists('background');
+      console.log('背景图片加载状态:', bgOk ? '成功' : '失败（将使用渐变背景）');
+      
+      // 进入菜单场景
+      this.scene.start('MenuScene');
+    }
+  }
+  
+  config.scene.unshift(BootScene);
+  
+  const game = new Phaser.Game(config);
+  
+  // 全屏支持
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'F11') {
+      event.preventDefault();
+      if (game.scale.isFullscreen) {
+        game.scale.stopFullscreen();
+      } else {
+        game.scale.startFullscreen();
+      }
+    }
+  });
+  
+  window.__game = game;
+});
+  </script>
+</body>
+</html>
